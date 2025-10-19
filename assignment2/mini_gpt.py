@@ -37,9 +37,11 @@ class MiniGPTConfig:
 
 
 def build_causal_mask(seq_len: int, device: torch.device | None = None) -> torch.Tensor:
-    """Return an upper-triangular mask to enforce auto-regressive attention."""
-    mask = torch.full((seq_len, seq_len), float("-inf"), device=device)
-    mask = torch.triu(mask, diagonal=1)
+    """Return a boolean upper-triangular mask to enforce auto-regressive attention."""
+    mask = torch.triu(
+        torch.ones((seq_len, seq_len), dtype=torch.bool, device=device),
+        diagonal=1,
+    )
     return mask
 
 
