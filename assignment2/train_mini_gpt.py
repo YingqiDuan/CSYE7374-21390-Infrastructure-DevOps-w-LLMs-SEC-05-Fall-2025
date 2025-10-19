@@ -24,7 +24,7 @@ import torch
 import torch.nn.functional as F
 from functools import partial
 
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 from torch.multiprocessing import cpu_count
 from torch.utils.data import DataLoader, Dataset, random_split
 
@@ -232,7 +232,7 @@ def main() -> None:
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
         try:
-            torch.backends.cuda.sdp_kernel(enable_flash=True, enable_math=False, enable_mem_efficient=True)
+            torch.nn.attention.sdpa_kernel(enable_flash=True, enable_math=False, enable_mem_efficient=True)
         except AttributeError:
             pass
     train_loader, val_loader, summary = prepare_dataloaders(
