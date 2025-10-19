@@ -65,10 +65,22 @@ class TransformerBlock(nn.Module):
             nn.Dropout(config.dropout),
         )
 
-    def forward(self, x: torch.Tensor, attn_mask: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        attn_mask: torch.Tensor | None = None,
+        key_padding_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         residual = x
         x = self.ln1(x)
-        attn_output, _ = self.attn(x, x, x, attn_mask=attn_mask, need_weights=False)
+        attn_output, _ = self.attn(
+            x,
+            x,
+            x,
+            attn_mask=attn_mask,
+            key_padding_mask=key_padding_mask,
+            need_weights=False,
+        )
         x = residual + self.dropout(attn_output)
 
         residual = x
@@ -107,7 +119,7 @@ class MiniGPT(nn.Module):
         """
         Args:
             input_ids: Tensor of shape (batch_size, seq_len)
-            attention_mask: Binary mask of same shape where 1 indicates valid tokens. (Currently ignored.)
+            attention_mask: Binary mask of same shape where 1 indicates valid tokens. Used to mask padding tokens.
 
         Returns:
             Logits of shape (batch_size, seq_len, vocab_size)
@@ -124,8 +136,14 @@ class MiniGPT(nn.Module):
 
         # Slice the cached causal mask for the current sequence length.
         causal_mask = self._causal_mask[:seq_len, :seq_len]
+        key_padding_mask = None
+        if attention_mask is not None:
+            if attention_mask.shape != input_ids.shape:
+                raise ValueError("attention_mask must have the same shape as input_ids.")
+            key_padding_mask = attention_mask == 0
+
         for block in self.blocks:
-            x = block(x, attn_mask=causal_mask)
+            x = block(x, attn_mask=causal_mask, key_padding_mask=key_padding_mask)
 
         x = self.layer_norm(x)
         logits = self.lm_head(x)
