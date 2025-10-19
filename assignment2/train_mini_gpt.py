@@ -268,7 +268,7 @@ def main() -> None:
     global_step = 0
     epoch = 0
     use_amp = device.type == "cuda"
-    scaler = GradScaler(enabled=use_amp)
+    scaler = GradScaler(device_type="cuda", enabled=use_amp)
 
     try:
         for epoch in range(1, args.epochs + 1):
