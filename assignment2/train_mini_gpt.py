@@ -19,12 +19,11 @@ from pathlib import Path
 import sys
 
 from dataclasses import asdict
+from functools import partial
+import contextlib
 
 import torch
 import torch.nn.functional as F
-from functools import partial
-
-from torch.amp import GradScaler, autocast
 from torch.multiprocessing import cpu_count
 from torch.utils.data import DataLoader, Dataset, random_split
 
@@ -34,6 +33,39 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from data_utils import DatasetSummary, load_token_dataset, pad_collate_fn
 from mini_gpt import MiniGPT, MiniGPTConfig
+
+try:
+    from torch.amp import autocast, GradScaler  # type: ignore[attr-defined]
+    _AMP_KW = {"device_type": "cuda"}
+    _SCALER_KW = {"device": "cuda"}
+except Exception:  # pragma: no cover - fallback for older torch
+    from torch.cuda.amp import autocast, GradScaler  # type: ignore
+    _AMP_KW = {}
+    _SCALER_KW = {}
+
+try:
+    from torch.nn.attention import sdpa_kernel, SDPBackend  # type: ignore[attr-defined]
+
+    def sdpa_ctx() -> contextlib.AbstractContextManager:
+        return sdpa_kernel(
+            [
+                SDPBackend.FLASH_ATTENTION,
+                SDPBackend.EFFICIENT_ATTENTION,
+                SDPBackend.MATH,
+            ]
+        )
+
+except Exception:  # pragma: no cover - fallback for older torch
+    try:
+        from torch.backends.cuda import sdp_kernel as _sdp_kernel  # type: ignore
+
+        def sdpa_ctx() -> contextlib.AbstractContextManager:
+            return _sdp_kernel(enable_flash=True, enable_mem_efficient=True, enable_math=True)
+
+    except Exception:  # pragma: no cover
+
+        def sdpa_ctx() -> contextlib.AbstractContextManager:
+            return contextlib.nullcontext()
 
 
 class _SequenceTruncationView(Dataset):
@@ -181,9 +213,10 @@ def evaluate(
             input_ids = batch["input_ids"].to(device, non_blocking=non_blocking)
             attention_mask = batch["attention_mask"].to(device, non_blocking=non_blocking)
             targets = batch["targets"].to(device, non_blocking=non_blocking)
-            with autocast(enabled=use_amp):
-                logits = model(input_ids, attention_mask=attention_mask)
-                loss = compute_loss(logits, targets, attention_mask)
+            with sdpa_ctx():
+                with autocast(enabled=use_amp, **_AMP_KW):
+                    logits = model(input_ids, attention_mask=attention_mask)
+                    loss = compute_loss(logits, targets, attention_mask)
             valid_tokens = attention_mask[:, 1:].sum().item()
             total_loss += loss.item() * valid_tokens
             total_tokens += valid_tokens
@@ -231,10 +264,6 @@ def main() -> None:
     if device.type == "cuda":
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
-        try:
-            torch.nn.attention.sdpa_kernel(enable_flash=True, enable_math=False, enable_mem_efficient=True)
-        except AttributeError:
-            pass
     train_loader, val_loader, summary = prepare_dataloaders(
         dataset_path=args.dataset,
         batch_size=args.batch_size,
@@ -282,9 +311,10 @@ def main() -> None:
                 targets = batch["targets"].to(device, non_blocking=pin_memory)
 
                 optimizer.zero_grad(set_to_none=True)
-                with autocast(enabled=use_amp):
-                    logits = model(input_ids, attention_mask=attention_mask)
-                    loss = compute_loss(logits, targets, attention_mask)
+                with sdpa_ctx():
+                    with autocast(enabled=use_amp, **_AMP_KW):
+                        logits = model(input_ids, attention_mask=attention_mask)
+                        loss = compute_loss(logits, targets, attention_mask)
 
                 if use_amp:
                     scaler.scale(loss).backward()
