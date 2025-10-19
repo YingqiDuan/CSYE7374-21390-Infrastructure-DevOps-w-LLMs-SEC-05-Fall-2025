@@ -221,6 +221,13 @@ def main() -> None:
         pin_memory=pin_memory,
         num_workers=args.num_workers,
     )
+    train_size = len(train_loader.dataset)
+    val_size = len(val_loader.dataset)
+    steps_per_epoch = train_size // args.batch_size
+    print(
+        f"Dataset split: train={train_size} validation={val_size} | "
+        f"steps per epoch (drop_last=True)={steps_per_epoch}"
+    )
 
     config = MiniGPTConfig(
         vocab_size=summary.vocab_size,
