@@ -22,8 +22,9 @@ from dataclasses import asdict
 
 import torch
 import torch.nn.functional as F
+from torch.cuda.amp import GradScaler, autocast
+from torch.multiprocessing import cpu_count
 from torch.utils.data import DataLoader, Dataset, random_split
-from torch.cuda.amp import autocast, GradScaler
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
@@ -79,7 +80,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-seq-len", type=int, default=None, help="Optional cap on sequence length.")
     parser.add_argument("--val-split", type=float, default=0.1, help="Fraction of data reserved for validation.")
     parser.add_argument("--grad-clip", type=float, default=1.0, help="Gradient norm clipping value.")
-    parser.add_argument("--num-workers", type=int, default=0, help="Number of DataLoader worker processes.")
+    default_workers = max(1, cpu_count() // 2)
+    parser.add_argument("--num-workers", type=int, default=default_workers, help="Number of DataLoader worker processes.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Training device.")
     parser.add_argument("--log-interval", type=int, default=25, help="Steps between training log prints.")
@@ -123,6 +125,7 @@ def prepare_dataloaders(
         pin_memory=pin_memory,
         num_workers=num_workers,
         persistent_workers=num_workers > 0,
+        prefetch_factor=2 if num_workers > 0 else None,
     )
     val_loader = DataLoader(
         val_dataset,
@@ -133,6 +136,7 @@ def prepare_dataloaders(
         pin_memory=pin_memory,
         num_workers=num_workers,
         persistent_workers=num_workers > 0,
+        prefetch_factor=2 if num_workers > 0 else None,
     )
     return train_loader, val_loader, summary
 
