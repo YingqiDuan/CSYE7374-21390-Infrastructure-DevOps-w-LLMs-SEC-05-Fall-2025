@@ -86,7 +86,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-workers", type=int, default=default_workers, help="Number of DataLoader worker processes.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Training device.")
-    parser.add_argument("--log-interval", type=int, default=25, help="Steps between training log prints.")
+    parser.add_argument("--log-interval", type=int, default=100, help="Steps between training log prints.")
     parser.add_argument("--save-every", type=int, default=None, help="Optional steps frequency for intermediate checkpoints.")
     args = parser.parse_args()
     if not (0.0 < args.val_split < 1.0):
