@@ -22,6 +22,8 @@ from dataclasses import asdict
 
 import torch
 import torch.nn.functional as F
+from functools import partial
+
 from torch.cuda.amp import GradScaler, autocast
 from torch.multiprocessing import cpu_count
 from torch.utils.data import DataLoader, Dataset, random_split
@@ -116,11 +118,13 @@ def prepare_dataloaders(
 
     generator = torch.Generator().manual_seed(seed)
     train_dataset, val_dataset = random_split(dataset, [train_size, val_size], generator=generator)
+    collate_fn = partial(pad_collate_fn, pad_token_id=0, target_length=summary.max_seq_len)
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
-        collate_fn=pad_collate_fn,
+        collate_fn=collate_fn,
         drop_last=True,
         pin_memory=pin_memory,
         num_workers=num_workers,
@@ -131,7 +135,7 @@ def prepare_dataloaders(
         val_dataset,
         batch_size=batch_size,
         shuffle=False,
-        collate_fn=pad_collate_fn,
+        collate_fn=collate_fn,
         drop_last=False,
         pin_memory=pin_memory,
         num_workers=num_workers,

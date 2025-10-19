@@ -11,7 +11,6 @@ from typing import Iterable, Sequence
 
 import torch
 from torch.utils.data import Dataset
-from torch.nn.utils.rnn import pad_sequence
 
 
 @dataclass(slots=True)
@@ -103,7 +102,11 @@ def load_token_dataset(path: str | Path) -> tuple[TokenSequenceDataset, DatasetS
     return dataset, summary
 
 
-def pad_collate_fn(batch: Sequence[dict[str, torch.Tensor]], pad_token_id: int = 0) -> dict[str, torch.Tensor]:
+def pad_collate_fn(
+    batch: Sequence[dict[str, torch.Tensor]],
+    pad_token_id: int = 0,
+    target_length: int | None = None,
+) -> dict[str, torch.Tensor]:
     """
     Collate function that pads variable-length sequences within a batch.
 
@@ -126,13 +129,24 @@ def pad_collate_fn(batch: Sequence[dict[str, torch.Tensor]], pad_token_id: int =
             if not torch.all((mask == 0) | (mask == 1)).item():
                 raise ValueError(f"attention_mask at index {idx} must contain only 0/1 values.")
 
-    padded_inputs = pad_sequence(input_ids, batch_first=True, padding_value=pad_token_id)
-    if padded_inputs.dtype != torch.long:
-        padded_inputs = padded_inputs.long()
+    max_seq_in_batch = max(seq.size(0) for seq in input_ids)
+    max_len = target_length if target_length is not None else max_seq_in_batch
+    if target_length is not None and target_length < max_seq_in_batch:
+        raise ValueError("target_length is smaller than at least one sequence in the batch.")
 
-    padded_masks = pad_sequence(attention_masks, batch_first=True, padding_value=0)
-    if padded_masks.dtype != torch.long:
-        padded_masks = padded_masks.long()
+    padded_inputs = torch.full(
+        (len(batch), max_len),
+        fill_value=pad_token_id,
+        dtype=torch.long,
+        device=first_device,
+    )
+    padded_masks = torch.zeros((len(batch), max_len), dtype=torch.long, device=first_device)
+    for i, (ids, mask) in enumerate(zip(input_ids, attention_masks, strict=True)):
+        length = ids.size(0)
+        if length == 0:
+            continue
+        padded_inputs[i, :length] = ids.long()
+        padded_masks[i, :length] = mask.long()
 
     targets = padded_inputs.clone()
     return {
