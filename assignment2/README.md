@@ -42,7 +42,10 @@ The script also supports:
 - `--val-split` to adjust validation proportion
 - `--save-every` to dump intermediate checkpoints during an epoch
 - `--grad-clip` to avoid exploding gradients
-- `--num-workers` to parallelise DataLoader preprocessing (defaults to 0)
+- `--num-workers` to parallelise DataLoader preprocessing (defaults to half your logical CPU cores)
+
+Notes:
+- When running on CUDA, training automatically enables TF32, mixed precision (AMP), and flash/efficient attention kernels when available.
 
 ## Visualising Training Curves
 After training, generate plots:
