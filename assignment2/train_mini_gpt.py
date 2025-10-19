@@ -23,6 +23,7 @@ from dataclasses import asdict
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset, random_split
+from torch.cuda.amp import autocast, GradScaler
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
@@ -157,7 +158,13 @@ def compute_loss(logits: torch.Tensor, targets: torch.Tensor, attention_mask: to
     return loss.sum() / denom
 
 
-def evaluate(model: MiniGPT, dataloader: DataLoader, device: torch.device, non_blocking: bool) -> tuple[float, float]:
+def evaluate(
+    model: MiniGPT,
+    dataloader: DataLoader,
+    device: torch.device,
+    non_blocking: bool,
+    use_amp: bool,
+) -> tuple[float, float]:
     model.eval()
     total_loss = 0.0
     total_tokens = 0.0
@@ -166,8 +173,9 @@ def evaluate(model: MiniGPT, dataloader: DataLoader, device: torch.device, non_b
             input_ids = batch["input_ids"].to(device, non_blocking=non_blocking)
             attention_mask = batch["attention_mask"].to(device, non_blocking=non_blocking)
             targets = batch["targets"].to(device, non_blocking=non_blocking)
-            logits = model(input_ids, attention_mask=attention_mask)
-            loss = compute_loss(logits, targets, attention_mask)
+            with autocast(enabled=use_amp):
+                logits = model(input_ids, attention_mask=attention_mask)
+                loss = compute_loss(logits, targets, attention_mask)
             valid_tokens = attention_mask[:, 1:].sum().item()
             total_loss += loss.item() * valid_tokens
             total_tokens += valid_tokens
@@ -244,6 +252,8 @@ def main() -> None:
     best_val_loss = float("inf")
     global_step = 0
     epoch = 0
+    use_amp = device.type == "cuda"
+    scaler = GradScaler(enabled=use_amp)
 
     try:
         for epoch in range(1, args.epochs + 1):
@@ -257,14 +267,22 @@ def main() -> None:
                 targets = batch["targets"].to(device, non_blocking=pin_memory)
 
                 optimizer.zero_grad(set_to_none=True)
-                logits = model(input_ids, attention_mask=attention_mask)
-                loss = compute_loss(logits, targets, attention_mask)
-                loss.backward()
+                with autocast(enabled=use_amp):
+                    logits = model(input_ids, attention_mask=attention_mask)
+                    loss = compute_loss(logits, targets, attention_mask)
 
-                if args.grad_clip is not None and args.grad_clip > 0:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
-
-                optimizer.step()
+                if use_amp:
+                    scaler.scale(loss).backward()
+                    if args.grad_clip is not None and args.grad_clip > 0:
+                        scaler.unscale_(optimizer)
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    loss.backward()
+                    if args.grad_clip is not None and args.grad_clip > 0:
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+                    optimizer.step()
 
                 valid_tokens = attention_mask[:, 1:].sum().item()
                 running_loss += loss.item() * valid_tokens
@@ -284,8 +302,8 @@ def main() -> None:
                 if args.save_every and global_step % args.save_every == 0:
                     save_checkpoint(output_dir, model, optimizer, epoch, history, global_step)
 
-            train_loss, train_ppl = evaluate(model, train_loader, device, pin_memory)
-            val_loss, val_ppl = evaluate(model, val_loader, device, pin_memory)
+            train_loss, train_ppl = evaluate(model, train_loader, device, pin_memory, use_amp)
+            val_loss, val_ppl = evaluate(model, val_loader, device, pin_memory, use_amp)
             history.append(
                 {
                     "epoch": epoch,
