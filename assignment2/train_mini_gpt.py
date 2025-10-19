@@ -220,6 +220,13 @@ def main() -> None:
 
     device = torch.device(args.device)
     pin_memory = device.type == "cuda"
+    if device.type == "cuda":
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        try:
+            torch.backends.cuda.sdp_kernel(enable_flash=True, enable_math=False, enable_mem_efficient=True)
+        except AttributeError:
+            pass
     train_loader, val_loader, summary = prepare_dataloaders(
         dataset_path=args.dataset,
         batch_size=args.batch_size,
