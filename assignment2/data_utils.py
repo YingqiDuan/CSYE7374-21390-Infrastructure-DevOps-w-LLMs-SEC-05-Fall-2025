@@ -84,7 +84,7 @@ def load_token_dataset(path: str | Path) -> tuple[TokenSequenceDataset, DatasetS
     if not path.exists():
         raise FileNotFoundError(f"Dataset file {path} does not exist.")
 
-    batches = torch.load(path, map_location="cpu")
+    batches = torch.load(path, map_location="cpu", weights_only=True)
     if not isinstance(batches, (list, tuple)):
         raise TypeError("Expected the dataset file to contain a list/tuple of batches.")
 
