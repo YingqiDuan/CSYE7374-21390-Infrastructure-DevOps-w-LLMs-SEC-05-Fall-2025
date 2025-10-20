@@ -20,6 +20,7 @@ import sys
 
 from dataclasses import asdict
 from functools import partial
+import platform
 
 import torch
 import torch.nn.functional as F
@@ -93,7 +94,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--val-split", type=float, default=0.1, help="Fraction of data reserved for validation.")
     parser.add_argument("--grad-clip", type=float, default=1.0, help="Gradient norm clipping value.")
     default_workers = max(1, cpu_count() // 2)
-    parser.add_argument("--num-workers", type=int, default=default_workers, help="Number of DataLoader worker processes.")
+    parser.add_argument("--num-workers-train", type=int, default=default_workers, help="Number of DataLoader worker processes for the training set.")
+    val_default = 0 if platform.system().lower().startswith("win") else default_workers
+    parser.add_argument("--num-workers-val", type=int, default=val_default, help="Number of DataLoader worker processes for the validation set.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Training device.")
     parser.add_argument("--log-interval", type=int, default=100, help="Steps between training log prints.")
@@ -111,7 +114,8 @@ def prepare_dataloaders(
     max_seq_len_override: int | None,
     seed: int,
     pin_memory: bool,
-    num_workers: int,
+    num_workers_train: int,
+    num_workers_val: int,
 ) -> tuple[DataLoader, DataLoader, DatasetSummary]:
     dataset, summary = load_token_dataset(dataset_path)
     if max_seq_len_override is not None:
@@ -137,9 +141,9 @@ def prepare_dataloaders(
         collate_fn=collate_fn,
         drop_last=True,
         pin_memory=pin_memory,
-        num_workers=num_workers,
-        persistent_workers=num_workers > 0,
-        prefetch_factor=2 if num_workers > 0 else None,
+        num_workers=num_workers_train,
+        persistent_workers=num_workers_train > 0,
+        prefetch_factor=2 if num_workers_train > 0 else None,
     )
     val_loader = DataLoader(
         val_dataset,
@@ -148,9 +152,9 @@ def prepare_dataloaders(
         collate_fn=collate_fn,
         drop_last=False,
         pin_memory=pin_memory,
-        num_workers=num_workers,
-        persistent_workers=num_workers > 0,
-        prefetch_factor=2 if num_workers > 0 else None,
+        num_workers=num_workers_val,
+        persistent_workers=False,
+        prefetch_factor=None,
     )
     return train_loader, val_loader, summary
 
@@ -250,7 +254,8 @@ def main() -> None:
         max_seq_len_override=args.max_seq_len,
         seed=args.seed,
         pin_memory=pin_memory,
-        num_workers=args.num_workers,
+        num_workers_train=args.num_workers_train,
+        num_workers_val=args.num_workers_val,
     )
     train_size = len(train_loader.dataset)
     val_size = len(val_loader.dataset)
