@@ -3,7 +3,7 @@ from transformers import AutoTokenizer
 from assignment2.mini_gpt import MiniGPT, MiniGPTConfig
 
 # 1. Load checkpoint
-ckpt = torch.load("assignment2/runs/exp01/mini_gpt_best.pt", map_location="cpu")
+ckpt = torch.load("assignment2/runs/exp01/mini_gpt_best.pt", map_location="cpu", weights_only=True)
 config = MiniGPTConfig(**ckpt["config"])
 model = MiniGPT(config)
 model.load_state_dict(ckpt["model_state_dict"])
@@ -12,9 +12,10 @@ model.eval()
 # 2. Prepare tokenizer/prompt 
 tokenizer = AutoTokenizer.from_pretrained("gpt2")
 prompt = "Artificial intelligence is"
-input_ids = tokenizer.encode(prompt, add_special_tokens=False, return_tensors="torch")
+inputs = tokenizer(prompt, return_tensors="pt", add_special_tokens=False)
+input_ids = inputs["input_ids"]
 
-# 3. Generate continuation (adjust args as needed)
+# 3. Generate continuation
 with torch.no_grad():
     generated_ids = model.generate(
         input_ids,

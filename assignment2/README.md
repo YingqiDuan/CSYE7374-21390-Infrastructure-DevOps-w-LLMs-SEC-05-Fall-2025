@@ -28,7 +28,8 @@ python assignment2/train_mini_gpt.py \
   --embed-dim 128 \
   --num-layers 2 \
   --num-heads 4 \
-  --dropout 0.1
+  --dropout 0.1 \
+  --save-every 1000
 ```
 
 Outputs written to `--output-dir`:
