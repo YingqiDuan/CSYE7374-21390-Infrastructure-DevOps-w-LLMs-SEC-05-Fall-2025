@@ -29,6 +29,12 @@ from torch.multiprocessing import cpu_count
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from torch.utils.data import DataLoader, Dataset, random_split
 
+try:
+    from tqdm.auto import tqdm
+except ImportError:  # pragma: no cover - graceful fallback if tqdm isn't installed
+    def tqdm(iterable=None, **kwargs):
+        return iterable if iterable is not None else []
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.append(str(SCRIPT_DIR))
@@ -186,13 +192,21 @@ def evaluate(
     device: torch.device,
     non_blocking: bool,
     use_amp: bool,
+    progress_desc: str | None = None,
 ) -> tuple[float, float]:
     model.eval()
     total_loss = 0.0
     total_tokens = 0.0
     autocast_device = "cuda" if device.type == "cuda" else "cpu"
+    iterator = dataloader
+    if progress_desc:
+        try:
+            total_batches = len(dataloader)
+        except TypeError:
+            total_batches = None
+        iterator = tqdm(iterator, desc=progress_desc, total=total_batches, leave=False)
     with torch.inference_mode():
-        for batch in dataloader:
+        for batch in iterator:
             input_ids = batch["input_ids"].to(device, non_blocking=non_blocking)
             attention_mask = batch["attention_mask"].to(device, non_blocking=non_blocking)
             targets = batch["targets"].to(device, non_blocking=non_blocking)
@@ -203,6 +217,8 @@ def evaluate(
             valid_tokens = attention_mask[:, 1:].sum().item()
             total_loss += loss.item() * valid_tokens
             total_tokens += valid_tokens
+    if progress_desc and hasattr(iterator, "close"):
+        iterator.close()
     mean_loss = total_loss / max(total_tokens, 1.0)
     perplexity = math.exp(mean_loss) if mean_loss < 50 else float("inf")
     return mean_loss, perplexity
@@ -290,50 +306,79 @@ def main() -> None:
             running_loss = 0.0
             running_tokens = 0.0
 
-            for batch in train_loader:
-                input_ids = batch["input_ids"].to(device, non_blocking=pin_memory)
-                attention_mask = batch["attention_mask"].to(device, non_blocking=pin_memory)
-                targets = batch["targets"].to(device, non_blocking=pin_memory)
+            try:
+                total_train_batches = len(train_loader)
+            except TypeError:
+                total_train_batches = None
+            train_progress = tqdm(
+                train_loader,
+                desc=f"Epoch {epoch}/{args.epochs} [train]",
+                total=total_train_batches,
+            )
+            try:
+                for batch in train_progress:
+                    input_ids = batch["input_ids"].to(device, non_blocking=pin_memory)
+                    attention_mask = batch["attention_mask"].to(device, non_blocking=pin_memory)
+                    targets = batch["targets"].to(device, non_blocking=pin_memory)
 
-                optimizer.zero_grad(set_to_none=True)
-                with sdpa_ctx():
-                    with autocast(device_type=autocast_device, enabled=use_amp):
-                        logits = model(input_ids, attention_mask=attention_mask)
-                        loss = compute_loss(logits, targets, attention_mask)
+                    optimizer.zero_grad(set_to_none=True)
+                    with sdpa_ctx():
+                        with autocast(device_type=autocast_device, enabled=use_amp):
+                            logits = model(input_ids, attention_mask=attention_mask)
+                            loss = compute_loss(logits, targets, attention_mask)
 
-                if use_amp:
-                    scaler.scale(loss).backward()
-                    if args.grad_clip is not None and args.grad_clip > 0:
-                        scaler.unscale_(optimizer)
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
-                    scaler.step(optimizer)
-                    scaler.update()
-                else:
-                    loss.backward()
-                    if args.grad_clip is not None and args.grad_clip > 0:
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
-                    optimizer.step()
+                    if use_amp:
+                        scaler.scale(loss).backward()
+                        if args.grad_clip is not None and args.grad_clip > 0:
+                            scaler.unscale_(optimizer)
+                            torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+                        scaler.step(optimizer)
+                        scaler.update()
+                    else:
+                        loss.backward()
+                        if args.grad_clip is not None and args.grad_clip > 0:
+                            torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+                        optimizer.step()
 
-                valid_tokens = attention_mask[:, 1:].sum().item()
-                running_loss += loss.item() * valid_tokens
-                running_tokens += valid_tokens
-                global_step += 1
+                    valid_tokens = attention_mask[:, 1:].sum().item()
+                    running_loss += loss.item() * valid_tokens
+                    running_tokens += valid_tokens
+                    global_step += 1
 
-                if global_step % args.log_interval == 0:
-                    mean_loss = running_loss / max(running_tokens, 1.0)
-                    perplexity = math.exp(mean_loss) if mean_loss < 50 else float("inf")
-                    print(
-                        f"[Epoch {epoch}/{args.epochs}] step {global_step} | "
-                        f"tokens {int(running_tokens)} | loss {mean_loss:.4f} | ppl {perplexity:.2f}"
-                    )
-                    running_loss = 0.0
-                    running_tokens = 0.0
+                    if global_step % args.log_interval == 0:
+                        mean_loss = running_loss / max(running_tokens, 1.0)
+                        perplexity = math.exp(mean_loss) if mean_loss < 50 else float("inf")
+                        if hasattr(train_progress, "set_postfix"):
+                            train_progress.set_postfix(loss=f"{mean_loss:.4f}", ppl=f"{perplexity:.2f}")
+                        print(
+                            f"[Epoch {epoch}/{args.epochs}] step {global_step} | "
+                            f"tokens {int(running_tokens)} | loss {mean_loss:.4f} | ppl {perplexity:.2f}"
+                        )
+                        running_loss = 0.0
+                        running_tokens = 0.0
 
-                if args.save_every and global_step % args.save_every == 0:
-                    save_checkpoint(output_dir, model, optimizer, epoch, history, global_step)
+                    if args.save_every and global_step % args.save_every == 0:
+                        save_checkpoint(output_dir, model, optimizer, epoch, history, global_step)
+            finally:
+                if hasattr(train_progress, "close"):
+                    train_progress.close()
 
-            train_loss, train_ppl = evaluate(model, train_loader, device, pin_memory, use_amp)
-            val_loss, val_ppl = evaluate(model, val_loader, device, pin_memory, use_amp)
+            train_loss, train_ppl = evaluate(
+                model,
+                train_loader,
+                device,
+                pin_memory,
+                use_amp,
+                progress_desc="Evaluation [train]",
+            )
+            val_loss, val_ppl = evaluate(
+                model,
+                val_loader,
+                device,
+                pin_memory,
+                use_amp,
+                progress_desc="Evaluation [val]",
+            )
             history.append(
                 {
                     "epoch": epoch,
